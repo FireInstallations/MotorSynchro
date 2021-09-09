@@ -13,15 +13,21 @@
   Poti A0
 
   switch lock/unlock Pin11 lock-HIGH, unlock-LOW
-
+*/
+/*Todo
+  - Gegenphase
 */
 
 const byte WritePins[] = {10, 9, 5, 6};
 const byte ReadPins[]  = {2, 3, 8, 12};
 
-bool Found[] = {false, false, false, false};
-
 byte LastSpeed = 15;
+byte masterCounts = 1;
+
+bool LastState[4] = {0, 0, 0, 0};
+byte CountStates[4] = {0, 0, 0, 0};
+byte Speed[4] = {0, 0, 0, 0};
+byte FirstState[4] = {2, 2, 2, 2};
 
 // the setup function runs once when you press reset or power the board
 void setup() {
@@ -39,87 +45,176 @@ void setup() {
   pinMode(A0, INPUT); //Poti
   Serial.begin(9600);
 
-
   // some time for startup
   delay(2000);
 
   //if they should rotate, start them once
 
-  if (GetSpeed () > 14) {
-    Serial.println("Starting.");
+  byte mspeed = GetSpeed ();
+  if (mspeed > 14) {
+    //Serial.println("Starting.");
 
     analogWrite(10, 65);
     analogWrite(9, 65);
     analogWrite(6, 65);
     analogWrite(5, 65);
 
-    delay(500);
+    delay(100);
 
+    for (byte i = 0; i < 4; i++) {
+      LastState[i] = digitalRead(ReadPins[i]);
+
+      Speed[i] = mspeed;
+    }
   }
 }
 
 // the loop function runs over and over again forever
 void loop() {
   byte mspeed;//motor speed
+
   bool lock = digitalRead(11);
-  //digitalRead(12)&&digitalRead(8)&&digitalRead(3)&&digitalRead(2)
   if (lock) {
     digitalWrite(LED_BUILTIN, HIGH);
 
-    if (Found[0] && Found[1] && Found[2] && Found[3]) {
+    if ((CountStates[0] < masterCounts) ) {
 
       for (byte i = 0; i < 4; i++) {
-        Found[i] = false;
+        bool StateNow = digitalRead(ReadPins[i]);
+/*
+        if (!VisioCount && !LastState[0]) {
+          if (i)
+            if (StateNow != LastState[0])
+              Vision[i - 1] += ".";
+            else
+              Vision[i - 1] += "|";
+        }*/
+
+        if (LastState[i] != StateNow) {
+          CountStates[i]++;
+          /*Serial.print("i: ");
+            Serial.print(i);
+            Serial.print(": ");
+            Serial.println(CountStates[i]);*/
+
+          if (FirstState[i] == 2)
+            FirstState[i] = StateNow;
+          LastState[i] = StateNow;
+
+          //Serial.println(((String)i) + " Nw St: " + ((String) StateNow));
+        }
       }
+      //Serial.println();
+
     } else {
+      //int Maximum = 0;
 
-      for (byte i = 0; i < 4; i++)
-        Found[i] = Found[i] || digitalRead(ReadPins[i]);
+      for (int i = 3; i >= 0; i--) {
+        if (i > 0) {
+
+          int Diff = CountStates[0] - CountStates[i];
+
+          //Maximum = max(Maximum, abs(Diff));
+
+          if (abs(Diff) < 5)
+            Diff = sgn(Diff);
+
+          if ((FirstState[i] != FirstState[0]) && !Diff) {
+            //Diff = 3;
+
+            /* Serial.print("Gegenphase Motor ");
+              Serial.print(i + 1);
+              Serial.println("!");*/
+          }
+
+          Diff = constrain(Speed[i] + Diff, 15, 254);
+
+          if (Diff != Speed[i]) {
+            /*Serial.print("NewSpeed for ");
+              Serial.print(i + 1);
+              Serial.print(": ");
+              Serial.println(Diff);*/
+
+            Speed[i] = Diff;
+          }
+        }
+
+        FirstState[i] = 2;
+        CountStates[i] = 0;
+      }
+
+      /*if (Maximum < 1) {
+        //Serial.println("akurat++");
+        masterCounts++;
+
+        if (masterCounts >= 17)
+          masterCounts = 1;
+
+        }
+        else if ((Maximum > 2) && (masterCounts > 1))
+        masterCounts--;
+
+        if (Maximum < 1 || Maximum > 2) {
+        //Serial.print("New MasterCount = ");
+        //  Serial.println(masterCounts);
+
+        }*/
+
+
+     /* if (!(Vision[0] == "" || Vision[1] == "" || Vision[2] == "")) {
+        for (byte i = 0; i < 3; i++) {
+
+          Serial.print(i + 2);
+          Serial.print (" :  ");
+          Serial.println(Vision[i]);
+          Vision[i] = "";
+        }
+
+        Serial.println();
+        Serial.println();
+      }*/
     }
-
-
   }
   else {
     digitalWrite(LED_BUILTIN, LOW);   // turn the LED on (HIGH is the voltage level)
 
-    if (!(Found[0] && Found[1] && Found[2] && Found[3]))
-      for (byte i = 0; i < 4; i++) {
-        Found[i] = false;
-      }
+    for (byte i = 0; i < 4; i++) {
+      CountStates[i] = 0;
+      CountStates[i + 4] = 0;
 
+      Speed[i] = Speed[0];
+    }
   }
-
   mspeed = GetSpeed();
 
+  if (mspeed > 0) {
+    Speed[0] = mspeed;
+  }
+
   for (byte i = 0; i < 4; i++) {
-
-    //Serial.println(Found[i]);
-
-    if (Found[i]) {
-      analogWrite(WritePins[i], round(mspeed * 0.9));
-      Serial.println("Got " + ((String)i) + " down!");
-    }
-    else
-    {
-      analogWrite(WritePins[i], mspeed);
-      Serial.println("Got " + ((String)i) + " up!");
-    }
+    analogWrite(WritePins[i], Speed[i]);
   }
 }
 
-//
+//signum
+template <typename T> int sgn(T val) {
+  return (T(0) < val) - (val < T(0));
+}
 
+//get
 byte GetSpeed () {
-  word PotNow = analogRead(A0);
-  byte mspeed = (int)(sq((float)PotNow) * 0.000216026 + 0.02 * (float)PotNow + 8.0);
+  int PotNow = analogRead(A0);
+  byte mspeed = constrain(round (1 / (-0.02777840522 * log(PotNow) + 0.1955972043)), 0, 255);
 
   if (mspeed < 15) mspeed = 0;
 
-  mspeed = mspeed * 0.7 + LastSpeed * 0.3;
-
+  mspeed = mspeed * 0.5 + LastSpeed * 0.5;
   LastSpeed = mspeed;
 
-  //Serial.println("Speed now: " + ((String)mspeed));
+  /*Serial.print("Speed now: ");
+    Serial.print(mspeed);
+    Serial.print(" bei ");
+    Serial.println(PotNow);*/
 
   return mspeed;
 }
