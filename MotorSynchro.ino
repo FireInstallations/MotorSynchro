@@ -27,36 +27,42 @@
 const byte ReadPins[]  = {2, 3, 8, 12};// reflex sensors 0 to 3
 const byte WritePins[] = {10, 9, 5, 6};// motors 0 to 3
 
-// States in a single main loop
+// actual rotor states
 bool StateNow[4] = {false, false, false, false};
-// individual speed for every rotor
-byte Speed[4] = {50, 50, 50, 50};
-// orginal values +1
-byte ShadowSpeed[4] = {51, 51, 51, 51};
-// fine slave speed control
-byte SpeedDecDigits[4] = {0, 0, 0, 0};
-// find half periode in frequency regulation, we have to find at least 3, so a value of 2 means this rotor got all needed counts.
+//last Rotorstates
+bool LastState[4];
+// is used to count ramps for frequency determination: 1 - first ramp found, 2 - second ramp found (halfperiod), 3 - third ramp found (full period)
 byte GotPeriod[4] = {0, 0, 0, 0};
+
+// actual speeds
+byte ASpeed [4] = {50, 50, 50, 50};
+byte ASpeedDD [4] = {0, 0, 0, 0}; // decimal digits
+// Slave Speeds memory, which is filled out in DisplaySpeeds, index = 0 means deceleration speed, index = 1 normal speed and index = 2 accelerated speed
+byte SSpeed[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}}; // [column][row] {{column},{row, row, row}, ...}
+byte SSpeedDD[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}}; // [rotor][index]
+float LastSpeed = 20;// for comparison of Potentiometer given speeds
+
+
 //How many loops since last periodic reset
 long RotorCount[4] = {0, 0, 0, 0};
-//flattening for GetPotiSpeed()
-float LastSpeed = 20;
+//flattening for GetPotiSSpeed()
+
 // did we already seen a high before a low in phase regulation?
 bool Ready[3] = {false, false, false};
 //strings that countains phase regulation highs & lows
-String LastSlaveString[3] = {"", "", ""};
-//Counts loop  % 40 for LastSlaveString
+String SlaveString[3] = {"", "", ""};
+//Counts loop  % 40 for SlaveString
 byte LoopCount = 0;
-//last Rotorstates
-bool LastState[4];
-//wait for a low in master until we start phase regulation
-bool StartPhaseReg = false;
-word lastMastercount = 0;
-// ist true, during the slave has a changed speed in phase regulation
-bool SlaveStop[3] = {false, false, false};
+
+// ist true, during the slave has a changed SSpeed in phase regulation
+
 bool PotiFlag = false;// enables potiinput
 bool CountFinished = false;// indicates, if counting is finished
-long WhileTimer;
+bool FCFlag = false;// indicates frequency control
+bool PCFlag = false;// indicates phase control
+bool DFlag = true;// display Strings of Slaves
+bool WPFlag = false; // White Period Flag of the master
+long FCTimer = 0;// timer for frequency control
 
 void setup() {
   // initialize digital pin LED_BUILTIN as an output.
@@ -77,7 +83,7 @@ void setup() {
   delay(2000);
 
   //if they should rotate, start them once
-  //if (GetPotiSpeed () > 14) {
+  //if (GetPotiSSpeed () > 14) {
   Serial.println("Starting.");
 
   analogWrite(10, 65);
@@ -89,16 +95,16 @@ void setup() {
 
   LastSpeed = analogRead(A0) * 50.0 / 1023.0;
 
-  // and give all master speed
+  // and give all master SSpeed
 
 
   for (byte i = 0; i < 4 ; i++) {
-    Speed[i] = LastSpeed; //mspeed;
-    analogWrite(WritePins[i], Speed[i]);
+    ASpeed[i] = LastSpeed; //mSSpeed;
+    analogWrite(WritePins[i], ASpeed[i]);
   }
   delay(200);
+  FCTimer = millis();
 }
-
 
 void loop() {
   bool lock = digitalRead(11);
@@ -107,231 +113,115 @@ void loop() {
 
     //write down just every 100th loop
     LoopCount++;
-    LoopCount %= 100;
-    // realize intermediate values between Speed and ShadowSpeed with loop counter
+    if (LoopCount == 100)LoopCount = 0;
+    // realize intermediate values between SSpeed and ShadowSSpeed with loop counter
     for (byte i = 0; i < 4; i++) {
 
       if (LoopCount == 0)
-        analogWrite(WritePins[i], Speed[i] + 1);
-      if (LoopCount == SpeedDecDigits[i])
-        analogWrite(WritePins[i], Speed[i]);
+        analogWrite(WritePins[i], ASpeed[i] + 1);
+      if (LoopCount == ASpeedDD[i])
+        analogWrite(WritePins[i], ASpeed[i]);
 
     }// end of for loop
 
-    //Get serial speed
+    //Get serial
     GetSerial();
-    //Get potiSpeed if Potiflag
-    if (PotiFlag)GetPotiSpeed();// gets the potispeed for master
+    //Get potiSSpeed if Potiflag
+    if (PotiFlag)GetPotiSSpeed();// gets the potiSSpeed for master
 
-    // speed regulation
-    // get Period
-    //GetRotorCounts();
+    // SSpeed control
 
+    if (millis() - FCTimer > 2000 && FCFlag == true && CountFinished) {
+      FCTimer = millis();
+      GetRotorCounts();
 
-    /* //phaseregulation if all rotors have got their new speeds
-      if ((GotPeriod[0] > 3) && (GotPeriod[1] > 3)  && (GotPeriod[2] > 3) && (GotPeriod[3] > 3) && !(GotPeriod[0] == 255) ) {
+      for (byte i = 1; i < 4; i++) {
+        if (RotorCount[i] > RotorCount[0])
+          SpeedAdder(ASpeed[i], ASpeedDD[i], 0.2);
 
-       // did we get a new Masterstate?
-       if (StateNow[0] != LastState[0]) {
+        else if (RotorCount[i] < RotorCount[0])
+          SpeedAdder(ASpeed[i], ASpeedDD[i], -0.2);
 
-         // if we got from white to black on master
-         if (!LastState[0] && StartPhaseReg) {
-
-           //set speed for every rotor (starts stopped for phase regulation ones again)
-           for (byte i = 0; i < 4; i++) {
-             Serial.print(" ");
-             Serial.print(i + 1);
-             Serial.print(" RC: ");
-             Serial.print(RotorCount[i]);
-             Serial.print(" ");
-             //print every speed
-             Serial.print("Sp: ");
-             Serial.print(Speed[i]);
-
-             //prepare frequency regulation
-             if ( (( abs((long)RotorCount[0] - (long)RotorCount[i])  / (float)RotorCount[0]  ) < 0.02) ) {
-               if (i)
-                 Serial.print(" Stabil");
-               else {
-                 if (!((( abs((long)RotorCount[0] - (long)RotorCount[1])  / (float)RotorCount[0]  ) < 0.02) && (( abs((long)RotorCount[0] - (long)RotorCount[2])  / (float)RotorCount[0]  ) < 0.02) && (( abs((long)RotorCount[0] - (long)RotorCount[3])  / (float)RotorCount[0]  ) < 0.02))) {
-                   RotorCount[i] = 0;
-                   GotPeriod[i] = 0;
-                 } else
-                   Serial.print(" Stabil");
-               }
-             } else {
-               RotorCount[i] = 0;
-               GotPeriod[i] = 0;
-             }
-
-
-           }
-           Serial.println();
-           Serial.println();
-
-           //print slaveStatesString and clear it
-           for (byte i = 0; i < 3; i++) {
-             //restart slaves
-             SlaveStop[i] = false;
-
-             //print Last slave string
-             Serial.print(i + 2);
-             Serial.print (" :  ");
-             Serial.println(LastSlaveString[i]);
-
-             LastSlaveString[i] = "";
-           }
-
-         } else if (!LastState[0]) {//start phase regulation, when the master is white
-           StartPhaseReg = true;
-
-           for (byte i = 1; i < 4; i++) {
-             float NewSpeed = ShadowSpeed[i] - 1 + SpeedDecDigits[i] / 100.0;
-             if (RotorCount[i] > RotorCount[0])
-               NewSpeed += 0.2;
-             else if (RotorCount[i] < RotorCount[0])
-               NewSpeed -= 0.2;
-
-             NewSpeed = constrain(NewSpeed, 15, 255);
-
-             Speed[i] = (byte)NewSpeed;
-             ShadowSpeed[i] = Speed[i] + 1;
-             SpeedDecDigits[i] = round((NewSpeed - Speed[i]) * 100);
-           }
-
-         }
-
-
-       }
-       //if master is on white (and the right resolution was reached)
-       //add a "+" for slave high and "-" for slave low
-       if (StartPhaseReg && LastState[0] && !(LoopCount)) {
-         for (byte i = 0; i < 3; i ++) { //slaves
-
-           // if master and slave are both white
-           if (StateNow[i + 1] == LastState[0]) {
-             LastSlaveString[i] += "+";
-
-             //first high since last low
-             if ((LastSlaveString[i][0] == '-') && !SlaveStop[i])    {
-               //accelerate rotor to move phase if frequency is less then 5% false
-               if (( abs((long)RotorCount[0] - (long)RotorCount[i + 1])  / (float)RotorCount[0]  ) < 0.05 ) {
-                 //analogWrite(WritePins[i + 1], constrain(round(Speed[i + 1] * 1.1), 15, 255));
-                 //analogWrite(WritePins[i + 1], constrain(round(Speed[i + 1] * 1.5), 15, 255) );
-                 analogWrite(WritePins[i + 1], ShadowSpeed[i + 1]);
-                 SlaveStop[i] = true;
-               }
-             } else
-               SlaveStop[i] = false;
-
-           } else { //master white slave black
-             LastSlaveString[i] += "-";
-
-             //first low since last high
-             if ((LastSlaveString[i][0] == '+')  && !SlaveStop[i]) {
-
-               //stop rotor to move phase if frequency is less then 5% false
-               if (( abs((long)RotorCount[0] - (long)RotorCount[i + 1])  / (float)RotorCount[0]  ) < 0.05 ) {
-                 //analogWrite(WritePins[i + 1], constrain(round(Speed[i + 1] * 0.9), 15, 255));
-                 //  analogWrite(WritePins[i + 1], constrain(round(Speed[i + 1] * 0.6), 15, 255) );
-                 analogWrite(WritePins[i + 1], ShadowSpeed[i + 1] - 1 );
-                 SlaveStop[i] = true;
-               }
-             } else
-               SlaveStop[i] = false;
-           }
-         }
-       }
-      } else {//period length measurement for frequency regulation
-       for (byte i  = 0; i < 4; i++) {
-         //Serial.println( RotorCount[0]);
-         // if one slave has stopped add 40 to speed once
-         if ((RotorCount[i] > 18000) && ((GotPeriod[i] < 4) || (!i) )) {
-           //Serial.println(i);
-
-           if (i > 0) {
-             Speed[i] = constrain(Speed[i] + 40, 15, 254);
-
-             RotorCount[i] = RotorCount[0] + 1;
-             GotPeriod[i] = 5; //ignore next counts
-           }
-           else {
-
-             GetPotiSpeed ();
-             GetSerial();
-
-             for (byte j = 0; j < 4; j++) {
-               analogWrite(WritePins[j], Speed[0]);
-             }
-
-             if (Speed[0] < 65) {
-               for (byte j = 0; j < 4; j++)
-                 GotPeriod[j] = 255;
-               Serial.println("Master Stoped");
-             }
-             else {
-               for (byte j = 0; j < 4; j++)
-                 GotPeriod[j] = 5;
-               Serial.println("Master Started");
-             }
-           }
-
-
-         } else {
-           // did we find a new half periood?
-           if (StateNow[i] != LastState[i]) {
-             GotPeriod[i] = constrain(GotPeriod[i] + 1, 0, 254);
-             LastState[i] = StateNow[i];
-
-             /*Serial.print(i);
-               Serial.print(" StN: ");
-               Serial.print(StateNow[i]);
-               Serial.print(" GHP: ");
-
-               Serial.print(GotPeriod[i]);
-               Serial.print(" RC: ");
-               Serial.println(RotorCount[i]);*/
-
-    /* }
-
-      switch (GotPeriod[i]) {
-       case 0:
-         RotorCount[i] = 0;
-         break;
-       case 1:
-         RotorCount[i]++;
-         break;
-       case 2:
-         RotorCount[i]++;
-         break;
-       case 3:
-         //prepare phase regulation
-         StartPhaseReg = false;
-         LoopCount = 0;
-
-         //ignore next counts
-         GotPeriod[i]++;
-
-         //set new Slave speed according to frequency determination
-         //Serial.println(RotorCount[i]);
-
-         if (!i) {//if master
-           GetPotiSpeed ();
-           GetSerial ();
-         }
-         break;
       }
+    }
+    // finish condition of frequency control
+    if (FCFlag) {
+      if (( abs((long)RotorCount[0] - (long)RotorCount[1])  / (float)RotorCount[0]  ) < 0.05 )
+        if (( abs((long)RotorCount[0] - (long)RotorCount[2])  / (float)RotorCount[0]  ) < 0.05 )
+          if (( abs((long)RotorCount[0] - (long)RotorCount[3])  / (float)RotorCount[0]  ) < 0.05 ) {
+            if (FCFlag == true)
+              Serial.println("frequency locked");
+            FCFlag = false;
+          }
+    }
+
+    // store all states until the master is white
+    if (!WPFlag)
+      for (byte i = 0; i < 4; i++)
+        LastState[i] = digitalRead(ReadPins[i]);
+
+    if (DFlag && !LoopCount) {// if display is active, loop counter = 0
+      StateNow[0] = digitalRead(ReadPins[0]);
+      if (StateNow[0] != LastState[0]) {// Master has changed
+        if (!LastState[0]) {
+          WPFlag = true;// if the last Master state was black, it is white now
+          LastState[0] = StateNow[0];// store the actual Master state
+        }
+        else WPFlag = false;// if the last Master state was white, it is black now
       }
+      if (WPFlag) { // it is the white period of Master
+
+        for (byte i = 1; i < 4; i++) {
+          // read slave stati
+          StateNow[i] = digitalRead(ReadPins[i]);
+          // write the slave strings
+          if ( StateNow[i])
+            SlaveString[i - 1] += "+"; else SlaveString[i - 1] += "-";
+
+          if (PCFlag) {// if Phase Control is active
+            // regulate the phases of the slaves
+
+            if (LastState[i] == StateNow[i] && StateNow[i] == LOW) // accelerate as long as leading minusses occur
+              ASpeed[i] = SSpeed[i - 1][2], ASpeedDD[i] = SSpeedDD[i - 1][2];
+            else if (StateNow[i] == HIGH) // return to normal slave speed for the plusses following, this is the ideal situation
+              ASpeed[i] = SSpeed[i - 1][1], ASpeedDD[i] = SSpeedDD[i - 1][1];
+            if (LastState[i] == StateNow[i] && LastState[i] == HIGH) // normal speeds for plusses persisting
+              ASpeed[i] = SSpeed[i - 1][1], ASpeedDD[i] = SSpeedDD[i - 1][1];
+            else if (StateNow[i] == LOW)// decelerate if trailing minusses occur
+              ASpeed[i] = SSpeed[i - 1][2], ASpeedDD[i] = SSpeedDD[i - 1][2];
+
+          }
+        }// end of for loop
+
+      } else if (LastState[0]) {// in the next loop LastState[0] is updated and is low, so it is done only once 
+        // the black period of Master has started, print out the slave string and clear it
+        //return to normal slave speeds
+        for (byte i = 1; i < 4; i++)
+          ASpeed[i] = SSpeed[i - 1][1], ASpeedDD[i] = SSpeedDD[i - 1][1];
+        // display results
+        if (DFlag) {
+          // print out the normal speeds of all rotors
+          DisplaySpeeds();
+          // print out the strings
+          for (byte i = 0; i < 3; i++) {
+            Serial.print(i + 2);
+            Serial.print (" :  ");
+            Serial.println(SlaveString[i]);
+
+            SlaveString[i] = "";
+          }
+        }
       }
-      }*/
+    }
   }
   else
     digitalWrite(LED_BUILTIN, LOW);   // turn the LED on (HIGH is the voltage level)
 
 }
 
-//get Speed for the master from potentiometer
-void GetPotiSpeed () {
+//***************************** subroutines ********************************************************************
+
+void GetPotiSSpeed () {//get SSpeed for the master from potentiometer
   float NewSpeed = analogRead(A0) * 67.0 / 1023.0;
 
 
@@ -345,88 +235,112 @@ void GetPotiSpeed () {
 
   if (NewSpeed < 15) {
     for (int i = 0; i < 4; i++)
-      Speed[i] = 0, SpeedDecDigits[i] = 0;
+      ASpeed[i] = 0, ASpeedDD[i] = 0;
   } else {
-    Speed[0] = (byte)NewSpeed;
-    ShadowSpeed[0] = Speed[0] + 1;
-    SpeedDecDigits[0] = round((NewSpeed - Speed[0]) * 100);
+    ASpeed[0] = (byte)NewSpeed;
+    ASpeedDD[0] = round((NewSpeed - ASpeed[0]) * 100);
   }
 
   LastSpeed = NewSpeed;
 }
 
-void GetSerial () {
+void GetSerial () {// commands over serial monitor
   // the serial monitor must have kein Zeilenende
   if (Serial.available() > 0) {
     // read the incoming String:
     int i = 0;
     String instring = Serial.readString();
-    if (instring.startsWith("p") || instring.startsWith("P"))
-      PotiFlag = true, Serial.println("PotiFlag = " + (String)PotiFlag);
+    if (instring.startsWith("po") || instring.startsWith("Po"))
+      PotiFlag = true/*,Serial.println("PotiFlag = " + (String)PotiFlag)*/;
     else {
+
       PotiFlag = false, Serial.println("PotiFlag = " + (String)PotiFlag);
-      if (instring.startsWith("a") || instring.startsWith("A")) {
-        for (byte i = 0; i < 4 ; i++) {
-          Speed[i] = Speed[0]; //Masterspeed
-          SpeedDecDigits[i] = SpeedDecDigits[0];
-          ShadowSpeed[i] = Speed[i] + 1;
-        }
-        DisplaySpeeds();
-      }
-      else if (instring.startsWith("c") || instring.startsWith("C")) {
-
-        GetRotorCounts();
-
-      }
-
-
-
+      if (instring.startsWith("fc") || instring.startsWith("FC"))
+        FCFlag = true, Serial.println("FCFlag = " + (String)FCFlag);
       else {
-        if (instring.endsWith("M1"))
-          i = 0;
-        if (instring.endsWith("M2"))
-          i = 1;
-        if (instring.endsWith("M3"))
-          i = 2;
-        if (instring.endsWith("M4"))
-          i = 3;
+        FCFlag = false, Serial.println("FCFlag = " + (String)FCFlag);
+        if (instring.startsWith("pc") || instring.startsWith("PC"))
+          PCFlag = true, Serial.println("PCFlag = " + (String)PCFlag);
+        else {
+          PCFlag = false, Serial.println("PCFlag = " + (String)PCFlag);
+          if (instring.startsWith("a") || instring.startsWith("A")) {
+            for (byte i = 0; i < 4 ; i++) {
+              ASpeed[i] = ASpeed[0]; //MasterSpeed
+              ASpeedDD[i] = ASpeedDD[0];
+            }
+            DisplaySpeeds();
+          }
+          else if (instring.startsWith("c") || instring.startsWith("C"))
 
-        float NewSpeed = instring.toFloat();
-        NewSpeed = constrain(NewSpeed, 15, 254);
-        Speed[i] = (byte)NewSpeed;
-        ShadowSpeed[i] = Speed[i] + 1;
-        SpeedDecDigits[i] = round((NewSpeed - Speed[i]) * 100);
-        DisplaySpeeds();
+            GetRotorCounts();
 
-        //start with 0 again so we count right
-        LoopCount = 0;
+          else {
+            if (instring.endsWith("M1"))
+              i = 0;
+            if (instring.endsWith("M2"))
+              i = 1;
+            if (instring.endsWith("M3"))
+              i = 2;
+            if (instring.endsWith("M4"))
+              i = 3;
+
+            float NewSpeed = instring.toFloat();
+            NewSpeed = constrain(NewSpeed, 15, 254);
+            ASpeed[i] = (byte)NewSpeed;
+            ASpeedDD[i] = round((NewSpeed - ASpeed[i]) * 100);
+            DisplaySpeeds();
+
+            //start with 0 again so we count right
+            LoopCount = 0;
+          }
+        }
       }
     }
   }
 }
 
-void DisplaySpeeds() {
+
+void DisplaySpeeds() {// display and assign speeds
+  // fill the slave speeds memory with normal numbers
+  for (byte i = 0; i < 3; i++) // rotor number - 1
+    for (byte j = 0; j < 3; j++)// index
+      SSpeed[i][j] = ASpeed[i + 1], SSpeedDD[i][j] = ASpeedDD[i + 1];
+  // add speeds for acceleration
+  for (byte i = 0; i < 3; i++) // rotor number - 1
+    SpeedAdder(SSpeed[i][2], SSpeedDD[i][2], 1);
+  // substract speeds for deceleration
+  for (byte i = 0; i < 3; i++) // rotor number - 1
+    SpeedAdder(SSpeed[i][0], SSpeedDD[i][0], -1);
+  // print out speed memory
+  for (byte i = 0; i < 3; i++) // rotor number - 1
+    for (byte j = 0; j < 3; j++)// index
+      Serial.print(SSpeed[i][j]), Serial.print("."), Serial.println(SSpeedDD[i][j]);
+
   for (byte j = 0; j < 4; j++) {
-    Serial.print("M" + (String)(j + 1) + " =  " + (String)Speed[j] + "."  );
-    if (SpeedDecDigits[j] < 10)Serial.print("0");
-    Serial.print((String)SpeedDecDigits[j] + "   ");
+    Serial.print("M" + (String)(j + 1) + " =  " + (String)ASpeed[j] + "."  );
+    if (ASpeedDD[j] < 10)Serial.print("0");
+    Serial.print((String)ASpeedDD[j] + "   ");
   }
   Serial.println();
 }
 
 void GetRotorCounts() {
+  FCTimer = millis();
   for (int i = 0; i < 4; i++)
     GotPeriod[i] = 0, LastState[i] = digitalRead(ReadPins[i]);
   CountFinished = false;
 
   // GotPeriod is 0 at the beginning, is 1, when the startramp has been detected, is 2, when the next ramp is detected, and is 3 for the overnext ramp
   while (!CountFinished) {
+    if (millis() - FCTimer > 10000) break;
 
     for (int j = 0; j < 4; j++) {
       StateNow[j] = digitalRead(ReadPins[j]);
-      if (LastState[j] != StateNow[j])GotPeriod[j]++, Serial.print("+");
-      if (GotPeriod[j] == 1 )RotorCount[j] = micros();
-      else if (GotPeriod[j] == 3)RotorCount[j] = micros() - RotorCount[j];
+      if (LastState[j] != StateNow[j]) {
+        GotPeriod[j]++;
+        if (GotPeriod[j] == 1 )RotorCount[j] = micros();
+        else if (GotPeriod[j] == 3)RotorCount[j] = micros() - RotorCount[j];
+      }
       LastState[j] = StateNow[j];
       //Serial.println();
 
@@ -437,6 +351,17 @@ void GetRotorCounts() {
     }
   }
 
-  Serial.println((String)GotPeriod[0] + "   " + (String)GotPeriod[1] + "   " + (String)GotPeriod[2] + "   " + (String)GotPeriod[3] + "   ");
+  //Serial.println((String)GotPeriod[0] + "   " + (String)GotPeriod[1] + "   " + (String)GotPeriod[2] + "   " + (String)GotPeriod[3] + "   ");
   Serial.println("M1C = " + (String)RotorCount[0] + "   M2C = " + (String)RotorCount[1] + "   M3C = " + (String)RotorCount[2] + "   M4C = " + (String)RotorCount[3]);
+}
+
+void SpeedAdder(byte Speed, byte SpeedDD, float adder) {
+  float NewSpeed = Speed + SpeedDD / 100.0;
+
+  NewSpeed += adder;
+
+  NewSpeed = constrain(NewSpeed, 15, 255);
+
+  Speed = (byte)NewSpeed;
+  SpeedDD = round((NewSpeed - Speed) * 100);
 }
