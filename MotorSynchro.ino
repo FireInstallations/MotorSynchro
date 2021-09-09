@@ -16,10 +16,12 @@
 
 */
 
+const byte WritePins[] = {10, 9, 5, 6};
+const byte ReadPins[]  = {2, 3, 8, 12};
+
+bool Found[] = {false, false, false, false};
+
 byte LastSpeed = 15;
-byte Place[] = {0, 0, 0, 0};
-byte Pins[] = {10, 9, 5, 6};
-byte Speed[] = {20, 20, 20, 20};
 
 // the setup function runs once when you press reset or power the board
 void setup() {
@@ -40,18 +42,20 @@ void setup() {
 
   // some time for startup
   delay(2000);
-  /*
-    //if they should rotate, start them once
-    if (GetSpeed () > 14) {
-      Serial.println("Starting.");
 
-      analogWrite(10, 65);
-      analogWrite(9, 65);
-      analogWrite(6, 65);
-      analogWrite(5, 65);
+  //if they should rotate, start them once
 
-      delay(100);
-    }*/
+  if (GetSpeed () > 14) {
+    Serial.println("Starting.");
+
+    analogWrite(10, 65);
+    analogWrite(9, 65);
+    analogWrite(6, 65);
+    analogWrite(5, 65);
+
+    delay(500);
+
+  }
 }
 
 // the loop function runs over and over again forever
@@ -59,89 +63,63 @@ void loop() {
   byte mspeed;//motor speed
   bool lock = digitalRead(11);
   //digitalRead(12)&&digitalRead(8)&&digitalRead(3)&&digitalRead(2)
-
-
-  for (byte i = 0; i < 4; i++) {
-    //analogWrite(Pins[i], Speed[i]);
-    Serial.print (" | Pl: " + ((String)Place[i]) + " Sp: " + ((String)Speed[i]) );
-  }
-  Serial.println();
-
   if (lock) {
     digitalWrite(LED_BUILTIN, HIGH);
 
-    if (GetLow() > 0)
-    {
-      if (GetHigh() > 1) {
-        Serial.println("Next Speed");
+    if (Found[0] && Found[1] && Found[2] && Found[3]) {
 
-        for (byte i = 1; i < 4; i++) {
-
-          if (Place[i] > Place[0]) Speed[i] -= 1;
-          if (Place[i] < Place[0]) Speed[i] += 1;
-
-        }
-
+      for (byte i = 0; i < 4; i++) {
+        Found[i] = false;
       }
+    } else {
 
-      Serial.println("Resett");
-      Place[0] = 0;
-      Place[1] = 0;
-      Place[2] = 0;
-      Place[3] = 0;
-
+      for (byte i = 0; i < 4; i++)
+        Found[i] = Found[i] || digitalRead(ReadPins[i]);
     }
-    else {
-      byte RankNow = GetHigh() + 1;
 
-      if (digitalRead(12) && !Place[3])
-        Place[3] = RankNow;
-
-      if (digitalRead(8) && !Place[2])
-        Place[2] = RankNow;
-
-      if (digitalRead(3) && !Place[1])
-        Place[1] = RankNow;
-
-      if (digitalRead(2) && !Place[0])
-        Place[0] = RankNow;
-    }
 
   }
   else {
     digitalWrite(LED_BUILTIN, LOW);   // turn the LED on (HIGH is the voltage level)
 
-    Place[0] = 0;
-    Place[1] = 0;
-    Place[2] = 0;
-    Place[3] = 0;
+    if (!(Found[0] && Found[1] && Found[2] && Found[3]))
+      for (byte i = 0; i < 4; i++) {
+        Found[i] = false;
+      }
 
-    for (byte i = 0; i < 4; i++)
-      Speed[i] = GetSpeed ();
-
-    Serial.println(GetSpeed ());
   }
 
+  mspeed = GetSpeed();
 
+  for (byte i = 0; i < 4; i++) {
 
-  //Serial.println(mspeed);
+    //Serial.println(Found[i]);
+
+    if (Found[i]) {
+      analogWrite(WritePins[i], round(mspeed * 0.9));
+      Serial.println("Got " + ((String)i) + " down!");
+    }
+    else
+    {
+      analogWrite(WritePins[i], mspeed);
+      Serial.println("Got " + ((String)i) + " up!");
+    }
+  }
 }
 
+//
+
 byte GetSpeed () {
-  int PotNow = analogRead(A0);
+  word PotNow = analogRead(A0);
   byte mspeed = (int)(sq((float)PotNow) * 0.000216026 + 0.02 * (float)PotNow + 8.0);
 
   if (mspeed < 15) mspeed = 0;
 
   mspeed = mspeed * 0.7 + LastSpeed * 0.3;
+
   LastSpeed = mspeed;
 
-  return mspeed;
-}
+  //Serial.println("Speed now: " + ((String)mspeed));
 
-byte GetHigh () {
-  return max (Place[0], max (Place[1], max(Place[2], Place[3])));
-}
-byte GetLow () {
-  return min (Place[0], min (Place[1], min(Place[2], Place[3])));
+  return mspeed;
 }
