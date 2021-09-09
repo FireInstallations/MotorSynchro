@@ -43,21 +43,17 @@ byte SSpeedDD[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}}; // [rotor][index]
 float LastSpeed = 20;// for comparison of Potentiometer given speeds
 
 
-//How many loops since last periodic reset
+//quarter period in microseconds
 long RotorCount[4] = {0, 0, 0, 0};
-//flattening for GetPotiSSpeed()
 
-// did we already seen a high before a low in phase regulation?
-bool Ready[3] = {false, false, false};
-//strings that countains phase regulation highs & lows
+
+//strings that contain the slave highs & lows as plus and minus
 String SlaveString[3] = {"", "", ""};
-//Counts loop  % 40 for SlaveString
+//Counts loop  % 100 for SlaveString
 byte LoopCount = 0;
 
-// ist true, during the slave has a changed SSpeed in phase regulation
-
 bool PotiFlag = false;// enables potiinput
-bool CountFinished = false;// indicates, if counting is finished
+bool CountFinished = false;// indicates, if counting for frequency measurement is finished
 bool FCFlag = false;// indicates frequency control
 bool PCFlag = false;// indicates phase control
 bool DFlag = true;// display Strings of Slaves
@@ -96,8 +92,6 @@ void setup() {
   LastSpeed = analogRead(A0) * 50.0 / 1023.0;
 
   // and give all master SSpeed
-
-
   for (byte i = 0; i < 4 ; i++) {
     ASpeed[i] = LastSpeed; //mSSpeed;
     analogWrite(WritePins[i], ASpeed[i]);
@@ -131,7 +125,7 @@ void loop() {
 
     // SSpeed control
 
-    if (millis() - FCTimer > 2000 && FCFlag == true && CountFinished) {
+    if (millis() - FCTimer > 2000 && FCFlag && CountFinished) {
       FCTimer = millis();
       GetRotorCounts();
 
@@ -146,10 +140,10 @@ void loop() {
     }
     // finish condition of frequency control
     if (FCFlag) {
-      if (( abs((long)RotorCount[0] - (long)RotorCount[1])  / (float)RotorCount[0]  ) < 0.05 )
-        if (( abs((long)RotorCount[0] - (long)RotorCount[2])  / (float)RotorCount[0]  ) < 0.05 )
-          if (( abs((long)RotorCount[0] - (long)RotorCount[3])  / (float)RotorCount[0]  ) < 0.05 ) {
-            if (FCFlag == true)
+      if (( abs((long)RotorCount[0] - (long)RotorCount[1])  / (float)RotorCount[0]  ) < 0.05 &&
+         ( abs((long)RotorCount[0] - (long)RotorCount[2])  / (float)RotorCount[0]  ) < 0.05 &&
+         ( abs((long)RotorCount[0] - (long)RotorCount[3])  / (float)RotorCount[0]  ) < 0.05 ) {
+            if (FCFlag)
               Serial.println("frequency locked");
             FCFlag = false;
           }
@@ -161,11 +155,11 @@ void loop() {
         LastState[i] = digitalRead(ReadPins[i]);
 
     if (DFlag && !LoopCount) {// if display is active, loop counter = 0
-      StateNow[0] = digitalRead(ReadPins[0]);
+      StateNow[0] = digitalRead(ReadPins[0]);// look for a new Master state
       if (StateNow[0] != LastState[0]) {// Master has changed
         if (!LastState[0]) {
           WPFlag = true;// if the last Master state was black, it is white now
-          LastState[0] = StateNow[0];// store the actual Master state
+          LastState[0] = StateNow[0];// store the actual white Master state
         }
         else WPFlag = false;// if the last Master state was white, it is black now
       }
@@ -301,16 +295,20 @@ void GetSerial () {// commands over serial monitor
 
 
 void DisplaySpeeds() {// display and assign speeds
+  
   // fill the slave speeds memory with normal numbers
   for (byte i = 0; i < 3; i++) // rotor number - 1
     for (byte j = 0; j < 3; j++)// index
       SSpeed[i][j] = ASpeed[i + 1], SSpeedDD[i][j] = ASpeedDD[i + 1];
+      
   // add speeds for acceleration
   for (byte i = 0; i < 3; i++) // rotor number - 1
     SpeedAdder(SSpeed[i][2], SSpeedDD[i][2], 1);
+    
   // substract speeds for deceleration
   for (byte i = 0; i < 3; i++) // rotor number - 1
     SpeedAdder(SSpeed[i][0], SSpeedDD[i][0], -1);
+    
   // print out speed memory
   for (byte i = 0; i < 3; i++) // rotor number - 1
     for (byte j = 0; j < 3; j++)// index
@@ -356,6 +354,7 @@ void GetRotorCounts() {
 }
 
 void SpeedAdder(byte Speed, byte SpeedDD, float adder) {
+  
   float NewSpeed = Speed + SpeedDD / 100.0;
 
   NewSpeed += adder;
