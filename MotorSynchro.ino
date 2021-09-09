@@ -16,18 +16,20 @@
 
 */
 
+//arrays of arduino pins
 const byte ReadPins[]  = {2, 3, 8, 12};
 const byte WritePins[] = {10, 9, 5, 6};
 
-word States[4] = {0, 0, 0, 0};
-word LastMasterState = 0;
+bool Statesnow[4] = {false, false, false, false}; //array of states in every loop
+word RotorCountNow[4] = {0, 0, 0, 0};
+word MasterCount = 0;
 bool StopCount[4] = {true, true, true, true};
 
 int LastSpeed = 15;
 byte Speed[4] = {0, 0, 0, 0};
 bool Ready[3] = {false, false, false};
 
-String Vision[3] = {"", "", ""};
+String OutStr[3] = {"", "", ""};
 byte VisioCount = 0;
 
 bool MasterState;
@@ -79,24 +81,29 @@ void loop() {
     digitalWrite(LED_BUILTIN, HIGH);
 
     for (byte i = 0; i < 4; i++) {
-      bool NewState = digitalRead(ReadPins[i]);
+      Statesnow[i] = digitalRead(ReadPins[i]);
 
-      if (!(i > 0) && (NewState != MasterState)) {
-        MasterState = NewState;
+      if (!(i > 0) && (Statesnow[0] != MasterState)) {
+        MasterState = Statesnow[i];
 
         if (!MasterState) {
           for (byte j = 0; j < 3; j++) {
 
             Serial.print(j + 2);
             Serial.print (" :  ");
-            Serial.println(Vision[j]);
+            Serial.println(OutStr[j]);
 
-            Vision[j] = "";
+            OutStr[j] = "";
           }
 
           for (byte j = 0; j < 4; j++) {
-            analogWrite(WritePins[j], Speed[j]);
-            
+
+            if (j > 0) {
+              analogWrite(WritePins[j], Speed[j]);
+            }
+            else
+              analogWrite(WritePins[j], Speed[j]);
+
             Serial.print(" ");
             Serial.print(j + 1);
             Serial.print(": ");
@@ -106,16 +113,18 @@ void loop() {
           Serial.println();
         }
 
-      } else if ((i > 0) && !(VisioCount) && (MasterState) ) {
-        if (NewState != MasterState)
-          Vision[i - 1] += "-";
+      } else 
+      if ((i > 0) /*&& !(VisioCount)*/ && (MasterState) ) {
+        if (Statesnow[i] != MasterState) {
+          OutStr[i - 1] += "-";
 
-        if (Ready[i - 1]) {
-          //analogWrite(WritePins[i], 0);
-          Ready[i - 1] = false;
-        }
-        else {
-          Vision[i - 1] += "+";
+          if (Ready[i - 1]) {
+            if (abs(MasterCount - RotorCountNow[i] ) / MasterCount < 0.05 )
+              analogWrite(WritePins[i], 0 );
+            Ready[i - 1] = false;
+          }
+        } else {
+          OutStr[i - 1] += "+";
           Ready[i - 1] = true;
         }
       }
@@ -126,28 +135,27 @@ void loop() {
 
     for (byte i  = 0; i < 4; i++) {
 
-      byte NewState = digitalRead(ReadPins[i]);
-
-
-      if (NewState && StopCount[i]) {
+      if ((Statesnow[i] && StopCount[i])|| (RotorCountNow[i] > 14000)) {
         StopCount[i] = false;
 
         if (i > 0) {
-          if (LastMasterState > States[i])
+          //Serial.println(RotorCountNow[i]);
+          
+          if (MasterCount > RotorCountNow[i])
             Speed[i] = constrain(Speed[i] - 1, 15, 254);
-          else if (LastMasterState < States[i])
+          else if (MasterCount < RotorCountNow[i])
             Speed[i] = constrain(Speed[i] + 1, 15, 254);
         }
         else {
 
-          LastMasterState = States[i];
+          MasterCount = RotorCountNow[i];
           Speed[i] = GetSpeed ();
         }
-        States[i] = 0;
-      } else if (!NewState)
+        RotorCountNow[i] = 0;
+      } else if (!Statesnow[i])
         StopCount[i] = true;
 
-      States[i]++;
+      RotorCountNow[i]++;
     }
   }
   else digitalWrite(LED_BUILTIN, LOW);   // turn the LED on (HIGH is the voltage level)
