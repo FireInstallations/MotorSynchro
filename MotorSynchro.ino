@@ -19,6 +19,7 @@
   RK4 in an MOS4093 Pin13 via MOS4093 Pin11 an Arduino Pin12
 
   Poti A0
+  Stroboskop Arduino Pin07
 
   switch lock/unlock Arduino Pin11 lock-HIGH, unlock-LOW
 
@@ -31,6 +32,8 @@ const byte WritePins[] = {10, 9, 5, 6};// motors 0 to 3
 enum ConsoleCommands {InSpeedC, DecSpeedC, SpeedC, FreqCC, PhaseCC, PotC, RotCC, MSpeedC, HelpC, AutoC};
 bool AutoMode = true;
 byte AutoState = 0;
+byte StrobCnt = 0;
+bool WPFlagOld = true;
 
 // actual rotor states
 bool StateNow[4] = {false, false, false, false};
@@ -80,6 +83,7 @@ void setup() {
   pinMode(6, OUTPUT); //M2
   pinMode(5, OUTPUT); //M1
   pinMode(A0, INPUT); //Poti
+  pinMode(7, OUTPUT); //Stroboskop
   Serial.begin(9600);
 
   // some time for startup
@@ -104,6 +108,7 @@ void setup() {
 }
 
 void loop() {
+
   bool lock = digitalRead(11);
   if (lock) {
     if (PCFlag)digitalWrite(LED_BUILTIN, HIGH); else digitalWrite(LED_BUILTIN, LOW);
@@ -203,14 +208,26 @@ void loop() {
     }
 
     if (PCFlag) {
+      
 
-      //!TodO: effiziener
+      // generating the strobe signal for every eights white period, pulse length is the white period
+      if (WPFlag != WPFlagOld) {
+        //Serial.println(StrobCnt);
+        StrobCnt++, StrobCnt %= 8;
+        WPFlagOld = WPFlag;
+        if (!StrobCnt) {
+          digitalWrite(7, HIGH);
+        //  Serial.print("Blink");
+
+        } else
+          digitalWrite(7, LOW);
+      }
       // store all states until the master is white
-      if (!WPFlag)
+      if (!WPFlag)// if the master is black
         for (byte i = 0; i < 4; i++) {
           LastState[i] = digitalRead(ReadPins[i]);
 
-          if (LastState[0])
+          if (LastState[0])// ignore the first time, when master turned to white, so the new master state is recognized in the following
             LastState[0] = false;
         }
 
@@ -218,6 +235,7 @@ void loop() {
         StateNow[0] = digitalRead(ReadPins[0]);// look for a new Master state
         if (StateNow[0] != LastState[0]) {// Master has changed
           if (!LastState[0]) {
+            WPFlagOld = false;
             WPFlag = true;// if the last Master state was black, it is white now
             LastState[0] = StateNow[0];// store the actual white Master state
           }
